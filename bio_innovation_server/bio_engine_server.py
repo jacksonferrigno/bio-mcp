@@ -10,10 +10,10 @@ load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 SEARCH_ENGINE_ID = os.getenv("SEARCH_ENGINE_ID") #  CX ID
 SEARCH_API_BASE = "https://www.googleapis.com/customsearch/v1"
-USER_AGENT = "bio-innovation-engine/0.1"
+USER_AGENT = "bio-innovation-engine/0.2"
 
 # --- helper functions ---
-async def perform_search(query, api_key, cx_id, num_results):
+async def perform_search(query:str, api_key:Optional[str], cx_id:Optional[str], num_results:int=3)-> Optional[Dict[str,Any]]:
     """Performs good search and returns raw JSON response"""
     params={
         "key":api_key,
@@ -36,13 +36,13 @@ async def perform_search(query, api_key, cx_id, num_results):
         except Exception as e:
             print(f"Server Log perform_search | unexpected error: {e}")
             return None
-def extract_keywords(text, max_ngram_size=3, num_keywords=10):
+def extract_keywords(text:str , max_ngram_size: int=3, num_keywords: int=10)-> List[str]:
     """gets the keywords from given text with YAKE"""
     kw_extractor = yake.KeywordExtractor(lan="en", n=max_ngram_size, dedupLim=0.9,top=num_keywords)
     keywords= kw_extractor.extract_keywords(text)
     return [kw[0] for kw in keywords]
 
-def format_result(problem_text, search_response):
+def format_result(problem_text: str, search_response: Optional[Dict[str,Any]]) -> Dict[str,Any]:
     """formats google search results into structured dictionary"""
     if not search_response or "items" not in search_response:
         return{
@@ -76,7 +76,7 @@ def format_result(problem_text, search_response):
     
 # --- Tool Implementation --- 
 @mcp.tool()
-async def tool_research_user_problem(problem_description):
+async def tool_research_user_problem(problem_description: str) ->Dict[str,Any]:
     """Researches the users problem description using web search to gather 
         initial context, extract keywords, and provide relevant links 
         Args: 
@@ -92,7 +92,7 @@ async def tool_research_user_problem(problem_description):
     return formatted_results
     
 @mcp.tool()
-async def tool_find_initial_bio_concepts(problem_keywords, problem_summary):
+async def tool_find_initial_bio_concepts(problem_keywords: List[str], problem_summary: Optional[str]=None) -> Dict[str,Any]:
     """
     Generates diverse biological search queries based on problem keywords and an optional summary,
     then performs web searches to find distinct, initial related biological concepts/themes.
@@ -157,21 +157,56 @@ async def tool_find_initial_bio_concepts(problem_keywords, problem_summary):
     return  {"bio_concepts_found": list(found_bio_concepts_dict.values())}
 
 @mcp.tool()
-async def tool_get_bio_concept_overview(bio_concept):
+async def tool_get_bio_concept_overview(bio_concept: str)-> str:
     """
     Performs a targeted web search for a specific biological concept/system
     and returns a Markdown formatted overview.
 
     Args:
-        bio_concept_name: The name of the biological concept (often a title from previous tool).
+        bio_concept: The name of the biological concept (often a title from previous tool).
     """
-    # TODO: this function for spec biological concepts 
+    print(f"Server Log - tool_get_bio_concept_overview | researching concept {bio_concept}")
+    #targeted simple query
+    query=f"what is {bio_concept} in biology OR {bio_concept} biology overview"
+    search_res_json = await perform_search(query,GOOGLE_API_KEY,SEARCH_ENGINE_ID, num_results=1)
+    
+    if search_res_json and search_res_json.get("items") and len(search_res_json["items"])>0:
+        top_result = search_res_json["items"][0]
+        title = top_result.get("title", bio_concept)
+        snippet= top_result.get("snippet", "nothing found").strip().replace("\n"," ")
+        link = top_result.get("link","")
+        
+        #markdown output
+        markdown_output = f"""
+        # Biological Concept Overview: {bio_concept}
+
+        **Source Title:** {title}
+        **Link:** {link}
+
+        ## Overview:
+        {snippet}
+        """
+        return markdown_output
+    else:
+        return f" ## NO overview found for suitable information"
+     
     
     
 
                 
-                
-                
+#Running server
+if __name__ == "__main__":
+        if not GOOGLE_API_KEY or not SEARCH_ENGINE_ID:
+            print("ERROR: Missing GOOGLE_API_KEY or SEARCH_ENGINE_ID environment variables.")
+            print("Please set them before running the server.")      
+        else:
+            print(f"Starting BioInnovationServer (MCP) ({USER_AGENT})...")
+            print(f"Google Search API Key: {'*' * (len(GOOGLE_API_KEY) - 4) + GOOGLE_API_KEY[-4:] if GOOGLE_API_KEY else 'Not Set'}")
+            print(f"Search Engine ID: {'*' * (len(SEARCH_ENGINE_ID) - 4) + SEARCH_ENGINE_ID[-4:] if SEARCH_ENGINE_ID else 'Not Set'}")
+            mcp.run(transport='stdio')
+            print("BioInnovationServer (MCP) stopped.")
+            
+
         
         
     
