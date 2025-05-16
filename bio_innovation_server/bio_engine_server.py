@@ -4,13 +4,24 @@ from mcp.server.fastmcp import FastMCP
 from dotenv import load_dotenv
 import os 
 import yake
+import psycopg2
+import psycopg2.extras
+import json
 
 mcp = FastMCP("bio_engine_server")
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 SEARCH_ENGINE_ID = os.getenv("SEARCH_ENGINE_ID") #  CX ID
 SEARCH_API_BASE = "https://www.googleapis.com/customsearch/v1"
-USER_AGENT = "bio-innovation-engine/0.2"
+USER_AGENT = "bio-innovation-engine/0.3"
+
+# PostgreSQL connections details
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")     
+
+
 
 # --- helper functions ---
 async def perform_search(query:str, api_key:Optional[str], cx_id:Optional[str], num_results:int=3)-> Optional[Dict[str,Any]]:
@@ -72,7 +83,26 @@ def format_result(problem_text: str, search_response: Optional[Dict[str,Any]]) -
         "extracted_keywords": extracted_keywords,
         "relevant_links" : links
     }
-    
+
+# ----- DB helpers ----- 
+def get_connection():
+    """ Makes connection to database
+
+    Returns:
+        connection cursor
+    """
+    try:
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            user=DB_USER,
+            host=DB_HOST,
+            port=DB_PORT
+        )
+        print(f"Server log | DB - Connection established")
+        return conn
+    except psycopg2.Error as e:
+        print(f"Server log DB | error: unable to connect: {e}")
+        return None
     
 # --- Tool Implementation --- 
 @mcp.tool()
@@ -189,22 +219,148 @@ async def tool_get_bio_concept_overview(bio_concept: str)-> str:
         return markdown_output
     else:
         return f" ## NO overview found for suitable information"
-     
+    
+
+@mcp.tool()
+def tool_store_finding(finding_key: str, finding_data: Dict[str, Any])-> Dict[str, Any]:
+    """ After research, the client should store their findings in a key-pair match style where it stores the
+        topic as the key and the value is the findings stored as a JSONB. If key
+    exists, it updates the value. 
+    
+    
+
+    Args:
+        finding_key (str): Unique key for finding 
+        finding_data (Dict[str, Any]): the data to store as python dictionary
+    """
+    print(f"Server log DB_store |  attempting to store key value pair {finding_key} and {finding_data}")
+    # connect to db
+    conn= get_connection()
+    if not conn:
+        return {"status": "error", "message":"Database connection failed"}
+    
+    try:
+        with conn.cursor() as cur:
+            # insert new mapping into table 
+            # if theres a conflict... just add to mappings
+            cur.execute(
+                """
+                INSERT INTO biomap (finding_topic, finding_content)
+                VALUES (%s,%s)
+                ON CONFLICT (finding_topic) DO UPDATE SET
+                    finding_content = EXCLUDED.finding_content;
+                """, (finding_key, psycopg2.extras.Json(finding_data)) 
+            )
+            conn.commit()
+            print(f"server log - store findings | success")
+            return  {"status": "success", "key": finding_key,  "message":"store complete"}
+    except psycopg2.Error as e:
+        #rollback changes if any error 
+        conn.rollback()
+        print(f"server log - store findings | error storing details {e}")
+        return {"status": "error", "key": finding_key, "message": f"Database error: {e}"}
+    finally:
+        #always close
+        if conn:
+            conn.close()
+@mcp.tool()
+def tool_fetch_finding(finding_key: str)->Optional[Dict[str,Any]]:
+    """  This tool should be ran prior to any specific research on 
+        Biological topic matches and query our table to see if the topic
+        has already been reserach
+
+    Args:
+        finding_key (str): what were looking for
+
+    Returns:
+        Optional[Dict[str,Any]]: ouput of the dictionary
+    """
+    print(f"Server log DB_fetch |  attempting to store key value pair {finding_key}")
+    conn= get_connection()
+    if not conn:
+        return {"status": "error", "message":"Database connection failed"}
+    
+    try:
+        # establish cursor with python dictonary extraction capabaliies 
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * from biomap WHERE finding_topic =%s;", (finding_key,))
+            #fetch the results 
+            result = cur.fetchall()
+            if result:
+                #found something so we can reutrn what we got 
+                print(f"Server log DB_fetch | successfully found data")
+                return result
+            else:
+                # got nothing (this is valid not error)
+                print(f"Server log DB_fetch | no data to be found")
+                return None               
+    except psycopg2.Error as e:
+        print(f"server log - store findings | error fetching ")
+        return {"error": f"db fetch error {e}"}
+    finally:
+        if conn:
+            conn.close()
+            
+@mcp.tool()
+def tool_fetch_all()->Optional[Dict[str,Any]]:
+    """This tool should be used by the client to fetch all of our research and query our knowledge base in our Postgres Table
+        the object of this is to output and display all of our findings throughout using this server.  
+
+    Returns:
+        Optional[Dict[str,Any]]: results of our table
+    """
+    print("Server log- tool_fetch_all | querying and return our knowledge base")
+    # get the connection
+    conn =get_connection()
+    if not conn:
+        return {"status": "error", "message":"Database connection failed"}
+    try:
+        # establish connection
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM biomap;")
+            #fetch all the results 
+            results =cur.fetchall()
+            if results:
+                # if we got something 
+                print("server log - tool_fetch_all | successfully acquired data")
+                return results
+            else:
+                # didnt get any - not an error
+                print("server log - tool_fetch_all | did not receive any data")
+                return None
+    except psycopg2.Error as e:
+        print(f"server log - tool_fetch_all | error fetching {e}")
+        return {"error": f"db fetch error {e}"}
+    finally:
+        if conn:
+            conn.close()
+        
     
     
 
                 
 #Running server
 if __name__ == "__main__":
-        if not GOOGLE_API_KEY or not SEARCH_ENGINE_ID:
-            print("ERROR: Missing GOOGLE_API_KEY or SEARCH_ENGINE_ID environment variables.")
+        if not all([GOOGLE_API_KEY, SEARCH_ENGINE_ID, DB_NAME, DB_HOST,DB_PORT,DB_USER]):
+            print("ERROR: Missing environment variables.")
             print("Please set them before running the server.")      
         else:
             print(f"Starting BioInnovationServer (MCP) ({USER_AGENT})...")
             print(f"Google Search API Key: {'*' * (len(GOOGLE_API_KEY) - 4) + GOOGLE_API_KEY[-4:] if GOOGLE_API_KEY else 'Not Set'}")
             print(f"Search Engine ID: {'*' * (len(SEARCH_ENGINE_ID) - 4) + SEARCH_ENGINE_ID[-4:] if SEARCH_ENGINE_ID else 'Not Set'}")
-            mcp.run(transport='stdio')
-            print("BioInnovationServer (MCP) stopped.")
+            # quick test to see if we can connect
+            conn_test=get_connection()
+            if conn_test:
+                conn_test.close()
+                # if we got one we can close we're good
+                print(f"connection to {DB_NAME} complete and success")
+                mcp.run(transport='stdio')
+                print("BioInnovationServer (MCP) stopped.")
+            else:
+                print("connection failed")
+                
+                
+
             
 
         
