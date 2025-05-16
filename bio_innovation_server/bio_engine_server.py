@@ -23,7 +23,7 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 
 
 
-# --- helper functions ---
+# --- reserach helper functions ---
 async def perform_search(query:str, api_key:Optional[str], cx_id:Optional[str], num_results:int=3)-> Optional[Dict[str,Any]]:
     """Performs good search and returns raw JSON response"""
     params={
@@ -129,7 +129,7 @@ async def tool_find_initial_bio_concepts(problem_keywords: List[str], problem_su
 
     Args:
         problem_keywords: A list of keywords derived from the user's problem description.
-        problem_summary: (Optional) A brief summary of the problem domain.
+        problem_summary: (Optional) A brief summary of the problem domain.  #TODO to be adedded later
     """
     print(f"server log - tool_find_initial_bio_concepts | received keywords {problem_keywords}")
     bio_searches= List[str]=[]
@@ -334,9 +334,71 @@ def tool_fetch_all()->Optional[Dict[str,Any]]:
     finally:
         if conn:
             conn.close()
+
+@mcp.tool()
+def generate_report_md(problem_topic:str, problem_description:str, research_results: Dict[str,Any], conclusion: str)-> str:
+    """This tool to be used to generate a report from the research report from the client.
+
+    Args:
+        problem_topic (str): The topic or concept being researched
+        problem_description (str): 
+        research_results (Dict[str,Any]): Dictionary containing the research map of the topics and results from the research
+                                            Dictionary contains main topics as keys. Values are expected to be dictionaries themsevles containing sub-details
+                                            {'source':'...', 'principles':'...', 'application':'...'}
+        conclusion (str) : The final statements encapsulating our research and how it solved our problem
         
+
+    Returns:
+        str: text of the markdown generation
+    """
+    print(f"Server log - generate_report | generating the report for {problem_topic}")
     
-    
+    if not (problem_topic and research_results and problem_description and conclusion):
+        print("No information provide")
+        return "Failed to generate markdown file"
+    # header 
+    markdown_text_starter=f"""
+# Research Report for {problem_topic}
+
+## Research Overview
+- This research aims to provide an overview on {problem_description} and how the effective use of biological behaviors can improve ***{problem_topic}*** .
+
+- Through the use of key research concepts, we uncovered insights that inform our proposed solution.
+
+### Research topics:
+- To solve the problem of ***{problem_topic}*** we investigated several topics to find ways to improve and innovate our solution.
+- We investigated topics like:
+    """
+    markdown = markdown_text_starter
+    # list of all the topics that we reviewed
+    for i in research_results:
+        markdown += f"- {i.replace('_',' ').title().strip()}\n"
+    # table format for our research results
+    markdown += "\n## Detailed Findings\n\n"
+    markdown+= "| Topic  | Key Information |\n"
+    markdown+= "| ------------- |:-------------|\n"
+    #first loop over topics
+    for topic_key, topic_values in research_results.items():
+        # clean topic
+        topic= str(topic_key).replace('_',' ').title().strip()
+        details_display_parts: List[str]=[]
+        if isinstance(topic_values,dict): #make sure its a dict we're getting
+            # second loop for multiple key-values pairs (if dict type)
+            for sub_key, sub_value in topic_values.items():
+                formatted_sub_key =str(sub_key).replace('-',' ').title().strip()
+                formatted_sub_value = str(sub_value).strip().replace('\n', ' ')
+                
+                details_display_parts.append(f"***{formatted_sub_key}:*** {formatted_sub_value} ")
+            detail_display = "<br>".join(details_display_parts)
+        elif isinstance(topic_values,str): # string format 
+            
+            detail_display= str(topic_values).strip().replace('\n', ' ')
+        markdown+=f"| {topic} | {detail_display} |\n"
+
+    markdown+=f"\n## Final Thoughts\n{conclusion}\n" 
+    with open(f"{problem_topic}_report.md",'w') as file:
+        file.write(markdown)
+    return markdown  
 
                 
 #Running server
