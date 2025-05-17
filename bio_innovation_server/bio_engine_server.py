@@ -7,6 +7,7 @@ import yake
 import psycopg2
 import psycopg2.extras
 import json
+import logging
 
 mcp = FastMCP("bio_engine_server")
 load_dotenv()
@@ -21,7 +22,7 @@ DB_USER = os.getenv("DB_USER")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")     
 
-
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] [bio_engine_server] %(message)s')
 
 # --- reserach helper functions ---
 async def perform_search(query:str, api_key:Optional[str], cx_id:Optional[str], num_results:int=3)-> Optional[Dict[str,Any]]:
@@ -34,18 +35,18 @@ async def perform_search(query:str, api_key:Optional[str], cx_id:Optional[str], 
     }
     async with httpx.AsyncClient() as client:
         try:
-            print(f"Server log perform_search | searching for {query}")
+            logging.info(f"  perform_search | searching for {query}")
             response = await client.get(SEARCH_API_BASE, params=params, timeout=10.0)
             response.raise_for_status() # exeception for bad status codes
             return response.json()
         except httpx.RequestError as e:
-            print(f"Server Log - perform_search | HTTP Request Error: {e}")
+            logging.error(f"  - perform_search | HTTP Request Error: {e}")
             return None
         except httpx.HTTPStatusError as e:
-            print(f"Server Log perform_search | HTTP status error: {e} ")
+            logging.error(f"  perform_search | HTTP status error: {e} ")
             return None
         except Exception as e:
-            print(f"Server Log perform_search | unexpected error: {e}")
+            logging.error(f"  perform_search | unexpected error: {e}")
             return None
 def extract_keywords(text:str , max_ngram_size: int=3, num_keywords: int=10)-> List[str]:
     """gets the keywords from given text with YAKE"""
@@ -98,10 +99,10 @@ def get_connection():
             host=DB_HOST,
             port=DB_PORT
         )
-        print(f"Server log | DB - Connection established")
+        logging.info(f"  | DB - Connection established")
         return conn
     except psycopg2.Error as e:
-        print(f"Server log DB | error: unable to connect: {e}")
+        logging.error(f"  DB | error: unable to connect: {e}")
         return None
     
 # --- Tool Implementation --- 
@@ -112,13 +113,13 @@ async def tool_research_user_problem(problem_description: str) ->Dict[str,Any]:
         Args: 
         problem_description: user description of the problem or area of interest
     """
-    print(f"server log - async def tool_research_user_problem(problem_description)| received problem {problem_description}")
+    logging.info(f"  - async def tool_research_user_problem(problem_description)| received problem {problem_description}")
     # perform the search 
     search_data_json = await perform_search(problem_description,GOOGLE_API_KEY, SEARCH_ENGINE_ID)
     
     #format it and put it together
     formatted_results= format_result(problem_description,search_data_json) 
-    print(f"[Server Log - tool_research_user_problem] Returning structured research results.")
+    logging.info(f"[  - tool_research_user_problem] Returning structured research results.")
     return formatted_results
     
 @mcp.tool()
@@ -131,8 +132,8 @@ async def tool_find_initial_bio_concepts(problem_keywords: List[str], problem_su
         problem_keywords: A list of keywords derived from the user's problem description.
         problem_summary: (Optional) A brief summary of the problem domain.  #TODO to be adedded later
     """
-    print(f"server log - tool_find_initial_bio_concepts | received keywords {problem_keywords}")
-    bio_searches= List[str]=[]
+    logging.info(f"  - tool_find_initial_bio_concepts | received keywords {problem_keywords}")
+    bio_searches: List[str]=[]
     
     #strat 1: primary keywords for direct searches
     if problem_keywords:
@@ -160,7 +161,7 @@ async def tool_find_initial_bio_concepts(problem_keywords: List[str], problem_su
     found_bio_concepts_dict: Dict[str, Dict[str, str]] = {} 
     
     for query in queries_to_run:
-        print(f"[Server Log - tool_find_initial_bio_concepts] Searching for bio concepts with query: '{query}'")
+        logging.info(f"[  - tool_find_initial_bio_concepts] Searching for bio concepts with query: '{query}'")
         search_results= await perform_search(query,GOOGLE_API_KEY, SEARCH_ENGINE_ID)
         
         # search gave us information
@@ -195,7 +196,7 @@ async def tool_get_bio_concept_overview(bio_concept: str)-> str:
     Args:
         bio_concept: The name of the biological concept (often a title from previous tool).
     """
-    print(f"Server Log - tool_get_bio_concept_overview | researching concept {bio_concept}")
+    logging.info(f"  - tool_get_bio_concept_overview | researching concept {bio_concept}")
     #targeted simple query
     query=f"what is {bio_concept} in biology OR {bio_concept} biology overview"
     search_res_json = await perform_search(query,GOOGLE_API_KEY,SEARCH_ENGINE_ID, num_results=1)
@@ -233,7 +234,7 @@ def tool_store_finding(finding_key: str, finding_data: Dict[str, Any])-> Dict[st
         finding_key (str): Unique key for finding 
         finding_data (Dict[str, Any]): the data to store as python dictionary
     """
-    print(f"Server log DB_store |  attempting to store key value pair {finding_key} and {finding_data}")
+    logging.info(f"  DB_store |  attempting to store key value pair {finding_key} and {finding_data}")
     # connect to db
     conn= get_connection()
     if not conn:
@@ -252,12 +253,12 @@ def tool_store_finding(finding_key: str, finding_data: Dict[str, Any])-> Dict[st
                 """, (finding_key, psycopg2.extras.Json(finding_data)) 
             )
             conn.commit()
-            print(f"server log - store findings | success")
+            logging.info(f"  - store findings | success")
             return  {"status": "success", "key": finding_key,  "message":"store complete"}
     except psycopg2.Error as e:
         #rollback changes if any error 
         conn.rollback()
-        print(f"server log - store findings | error storing details {e}")
+        logging.error(f"  - store findings | error storing details {e}")
         return {"status": "error", "key": finding_key, "message": f"Database error: {e}"}
     finally:
         #always close
@@ -275,7 +276,7 @@ def tool_fetch_finding(finding_key: str)->Optional[Dict[str,Any]]:
     Returns:
         Optional[Dict[str,Any]]: ouput of the dictionary
     """
-    print(f"Server log DB_fetch |  attempting to store key value pair {finding_key}")
+    logging.info(f"  DB_fetch |  attempting to store key value pair {finding_key}")
     conn= get_connection()
     if not conn:
         return {"status": "error", "message":"Database connection failed"}
@@ -288,14 +289,14 @@ def tool_fetch_finding(finding_key: str)->Optional[Dict[str,Any]]:
             result = cur.fetchall()
             if result:
                 #found something so we can reutrn what we got 
-                print(f"Server log DB_fetch | successfully found data")
+                logging.info(f"  DB_fetch | successfully found data")
                 return result
             else:
                 # got nothing (this is valid not error)
-                print(f"Server log DB_fetch | no data to be found")
+                logging.warning(f"  DB_fetch | no data to be found")
                 return None               
     except psycopg2.Error as e:
-        print(f"server log - store findings | error fetching ")
+        logging.error(f"  - store findings | error fetching ")
         return {"error": f"db fetch error {e}"}
     finally:
         if conn:
@@ -309,7 +310,7 @@ def tool_fetch_all()->Optional[Dict[str,Any]]:
     Returns:
         Optional[Dict[str,Any]]: results of our table
     """
-    print("Server log- tool_fetch_all | querying and return our knowledge base")
+    logging.info(" - tool_fetch_all | querying and return our knowledge base")
     # get the connection
     conn =get_connection()
     if not conn:
@@ -322,14 +323,14 @@ def tool_fetch_all()->Optional[Dict[str,Any]]:
             results =cur.fetchall()
             if results:
                 # if we got something 
-                print("server log - tool_fetch_all | successfully acquired data")
+                logging.info("  - tool_fetch_all | successfully acquired data")
                 return results
             else:
                 # didnt get any - not an error
-                print("server log - tool_fetch_all | did not receive any data")
+                logging.warning("  - tool_fetch_all | did not receive any data")
                 return None
     except psycopg2.Error as e:
-        print(f"server log - tool_fetch_all | error fetching {e}")
+        logging.error(f"  - tool_fetch_all | error fetching {e}")
         return {"error": f"db fetch error {e}"}
     finally:
         if conn:
@@ -351,10 +352,10 @@ def generate_report_md(problem_topic:str, problem_description:str, research_resu
     Returns:
         str: text of the markdown generation
     """
-    print(f"Server log - generate_report | generating the report for {problem_topic}")
+    logging.info(f"  - generate_report | generating the report for {problem_topic}")
     
     if not (problem_topic and research_results and problem_description and conclusion):
-        print("No information provide")
+        logging.error("No information provide")
         return "Failed to generate markdown file"
     # header 
     markdown_text_starter=f"""
@@ -404,22 +405,22 @@ def generate_report_md(problem_topic:str, problem_description:str, research_resu
 #Running server
 if __name__ == "__main__":
         if not all([GOOGLE_API_KEY, SEARCH_ENGINE_ID, DB_NAME, DB_HOST,DB_PORT,DB_USER]):
-            print("ERROR: Missing environment variables.")
-            print("Please set them before running the server.")      
+            logging.error("ERROR: Missing environment variables.")
+            logging.error("Please set them before running the server.")      
         else:
-            print(f"Starting BioInnovationServer (MCP) ({USER_AGENT})...")
-            print(f"Google Search API Key: {'*' * (len(GOOGLE_API_KEY) - 4) + GOOGLE_API_KEY[-4:] if GOOGLE_API_KEY else 'Not Set'}")
-            print(f"Search Engine ID: {'*' * (len(SEARCH_ENGINE_ID) - 4) + SEARCH_ENGINE_ID[-4:] if SEARCH_ENGINE_ID else 'Not Set'}")
+            logging.info(f"Starting BioInnovationServer (MCP) ({USER_AGENT})...")
+            logging.info(f"Google Search API Key: {'*' * (len(GOOGLE_API_KEY) - 4) + GOOGLE_API_KEY[-4:] if GOOGLE_API_KEY else 'Not Set'}")
+            logging.info(f"Search Engine ID: {'*' * (len(SEARCH_ENGINE_ID) - 4) + SEARCH_ENGINE_ID[-4:] if SEARCH_ENGINE_ID else 'Not Set'}")
             # quick test to see if we can connect
             conn_test=get_connection()
             if conn_test:
                 conn_test.close()
                 # if we got one we can close we're good
-                print(f"connection to {DB_NAME} complete and success")
+                logging.info(f"connection to {DB_NAME} complete and success")
                 mcp.run(transport='stdio')
-                print("BioInnovationServer (MCP) stopped.")
+                logging.info("BioInnovationServer (MCP) stopped.")
             else:
-                print("connection failed")
+                logging.error("connection failed")
                 
                 
 
