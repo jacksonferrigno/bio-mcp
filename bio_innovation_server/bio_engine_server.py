@@ -368,11 +368,11 @@ def generate_report_md(problem_topic:str, problem_description:str, research_resu
 ### Research topics:
 - To solve the problem of ***{problem_topic}*** we investigated several topics to find ways to improve and innovate our solution.
 - We investigated topics like:
-    """
+"""
     markdown = markdown_text_starter
     # list of all the topics that we reviewed
     for i in research_results:
-        markdown += f"- {i.replace('_',' ').title().strip()}\n"
+        markdown += f" - {i.replace('_',' ').title().strip()}\n"
     # table format for our research results
     markdown += "\n## Detailed Findings\n\n"
     markdown+= "| Topic  | Key Information |\n"
