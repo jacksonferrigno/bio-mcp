@@ -10,11 +10,11 @@
 - To solve the problem of ***Optimizing Irrigation Systems in Metropolitan Areas Through Bio-Inspired Approaches*** we investigated several topics to find ways to improve and innovate our solution.
 - We investigated topics like:
     - Plant Hydraulic Systems
-- Xerophyte Water Conservation
-- Root System Water Absorption
-- Mangrove Filtration Systems
-- Prairie Water Management
-- Mycorrhizal Networks
+    - Xerophyte Water Conservation
+    - Root System Water Absorption
+    - Mangrove Filtration Systems
+    - Prairie Water Management
+    - Mycorrhizal Networks
 
 ## Detailed Findings
 

@@ -10,8 +10,8 @@
 - To solve the problem of ***Optimizing Startup Team Workflow Using Biological Models*** we investigated several topics to find ways to improve and innovate our solution.
 - We investigated topics like:
     - Adaptive Evolution
-- Swarm Intelligence
-- Cellular Specialization
+    - Swarm Intelligence
+    - Cellular Specialization
 
 ## Detailed Findings
 
