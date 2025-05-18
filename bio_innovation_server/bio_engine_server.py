@@ -223,7 +223,7 @@ async def tool_get_bio_concept_overview(bio_concept: str)-> str:
     
 
 @mcp.tool()
-def tool_store_finding(finding_key: str, finding_data: Dict[str, Any])-> Dict[str, Any]:
+def tool_store_finding(finding_key: str, finding_data: Dict[str, Any], data_links:List[str])-> Dict[str, Any]:
     """ After research, the client should store their findings in a key-pair match style where it stores the
         topic as the key and the value is the findings stored as a JSONB. If key
     exists, it updates the value. 
@@ -233,6 +233,7 @@ def tool_store_finding(finding_key: str, finding_data: Dict[str, Any])-> Dict[st
     Args:
         finding_key (str): Unique key for finding 
         finding_data (Dict[str, Any]): the data to store as python dictionary
+        data_links (List[str]): links of the sources used
     """
     logging.info(f"  DB_store |  attempting to store key value pair {finding_key} and {finding_data}")
     # connect to db
@@ -246,11 +247,12 @@ def tool_store_finding(finding_key: str, finding_data: Dict[str, Any])-> Dict[st
             # if theres a conflict... just add to mappings
             cur.execute(
                 """
-                INSERT INTO biomap (finding_topic, finding_content)
-                VALUES (%s,%s)
+                INSERT INTO biomap (finding_topic, finding_content,sources)
+                VALUES (%s,%s,%s)
                 ON CONFLICT (finding_topic) DO UPDATE SET
-                    finding_content = EXCLUDED.finding_content;
-                """, (finding_key, psycopg2.extras.Json(finding_data)) 
+                    finding_content = EXCLUDED.finding_content,
+                    sources=EXCLUDED.sources;
+                """, (finding_key, psycopg2.extras.Json(finding_data),psycopg2.extras.Json(data_links)) 
             )
             conn.commit()
             logging.info(f"  - store findings | success")
@@ -337,7 +339,7 @@ def tool_fetch_all()->Optional[Dict[str,Any]]:
             conn.close()
 
 @mcp.tool()
-def generate_report_md(problem_topic:str, problem_description:str, research_results: Dict[str,Any], conclusion: str)-> str:
+def generate_report_md(problem_topic:str, problem_description:str, research_results: Dict[str,Any], conclusion: str, sources:List[str] )-> str:
     """This tool to be used to generate a report from the research report from the client.
 
     Args:
@@ -347,6 +349,7 @@ def generate_report_md(problem_topic:str, problem_description:str, research_resu
                                             Dictionary contains main topics as keys. Values are expected to be dictionaries themsevles containing sub-details
                                             {'source':'...', 'principles':'...', 'application':'...'}
         conclusion (str) : The final statements encapsulating our research and how it solved our problem
+        sources ( List[str]): List of all the sources used for the research and statements
         
 
     Returns:
@@ -397,6 +400,10 @@ def generate_report_md(problem_topic:str, problem_description:str, research_resu
         markdown+=f"| {topic} | {detail_display} |\n"
 
     markdown+=f"\n## Final Thoughts\n{conclusion}\n" 
+    markdown+=f"\n\n ## Sources \n"
+    for i in sources:
+        markdown+=f"- [{i}]({i})\n"
+        
     with open(f"{problem_topic}_report.md",'w') as file:
         file.write(markdown)
     return markdown  

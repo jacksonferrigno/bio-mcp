@@ -34,6 +34,5 @@ The server provides a suite of tools that enable an LLM client to:
 * **External APIs**: Google Custom Search JSON API.
 
 ## 📄 Example Reports
-  * [Optimizing Irrigation Systems in Metropolitan Areas Through Bio-Inspired Approaches_report](./Optimizing%20Irrigation%20Systems%20in%20Metropolitan%20Areas%20Through%20Bio-Inspired%20Approaches_report.md)
-  * [Optimizing Startup Team Workflow Using Biological Models_report](./Optimizing%20Startup%20Team%20Workflow%20Using%20Biological%20Models_report.md)
+  * [Research Report for Increasing Air Traffic Controller Productivity](./Research%20Report%20for%20Increasing%20Air%20Traffic%20Controller%20Productivity.md)
 
