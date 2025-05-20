@@ -34,5 +34,5 @@ The server provides a suite of tools that enable an LLM client to:
 * **External APIs**: Google Custom Search JSON API.
 
 ## 📄 Example Reports
-  * [Research Report for Increasing Air Traffic Controller Productivity](./Research%20Report%20for%20Increasing%20Air%20Traffic%20Controller%20Productivity.md)
+  * [Research Report for Increasing Air Traffic Controller Productivity](./demo.md)
 
