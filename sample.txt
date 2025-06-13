@@ -1,143 +1,130 @@
+import argparse, asyncio, json, os, sys, traceback
+from typing import List
 
-import asyncio
-import json
-import os
+import openai
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-import openai
 
-class NLToSchemaClient:
-    def __init__(self, api_key: str, base_url: str = None, model: str = "gpt-4"):
+
+SYSTEM_MSG = {
+    "role": "system",
+    "content": (
+        "You are an MCP-aware assistant. "
+        "When useful, call an MCP tool by returning a JSON `tool_call`. "
+        "Only call tools that the server advertises. "
+        "Otherwise answer normally."
+    ),
+}
+
+
+class NLToMCPClient:
+    def __init__(self, api_key: str, base_url: str | None, model: str):
         self.llm = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
-        
-    async def run(self, server_command: list[str]):
-        """Main chat loop"""
-        server_params = StdioServerParameters(
-            command=server_command[0], 
-            args=server_command[1:]
-        )
-        
-        async with stdio_client(server_params) as (read, write):
+        self._openai_tools: List[dict] = []
+
+    # ---------- public entry point ----------
+    async def run(self, server_cmd: List[str]) -> None:
+        params = StdioServerParameters(command=server_cmd[0], args=server_cmd[1:])
+        async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                
-                # Get capabilities
-                tools = await session.list_tools()
-                openai_tools = [self._to_openai_tool(t) for t in tools.tools]
-                
-                print("Ready! Commands: 'list prompts', 'get prompt <name>', or enter requests. Type 'quit' to exit:")
-                
+                print("Connected to MCP server.  Type your query (or 'quit').\n")
+
+                history = [SYSTEM_MSG]
                 while True:
-                    user_input = input("\n> ").strip()
-                    if user_input.lower() in ['quit', 'exit']:
-                        break
+                    user_input = input("> ").strip()
+                    if user_input.lower() in {"quit", "exit"}:
+                        return
                     if not user_input:
                         continue
-                        
-                    await self._handle_request(session, openai_tools, user_input)
-    
-    async def _handle_request(self, session, tools, user_input):
-        """Handle single user request with prompt support"""
-        # List prompts
-        if user_input.lower() in ['list prompts', 'show prompts']:
-            await self._list_prompts(session)
-            return
-        
-        # Get specific prompt
-        if user_input.lower().startswith('get prompt '):
-            prompt_name = user_input[11:].strip()
-            await self._get_prompt(session, prompt_name)
-            return
-        
-        # Regular LLM conversation
-        messages = [{"role": "user", "content": user_input}]
-        
-        for _ in range(3):  # Max 3 iterations
+
+                    history.append({"role": "user", "content": user_input})
+                    await self._chat_loop(session, history)
+
+    # ---------- main conversation loop ----------
+    async def _chat_loop(self, session: ClientSession, history: list) -> None:
+        while True:
+            await self._refresh_tools(session)
             response = await self.llm.chat.completions.create(
                 model=self.model,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto"
+                messages=history,
+                tools=self._openai_tools,
+                tool_choice="auto",
+                stream=True,
             )
-            
-            message = response.choices[0].message
-            
-            if not message.tool_calls:
-                print(f"\n{message.content}")
-                break
-                
-            messages.append({
-                "role": "assistant", 
-                "content": message.content,
-                "tool_calls": [{"id": tc.id, "type": "function", 
-                              "function": {"name": tc.function.name, 
-                                         "arguments": tc.function.arguments}} 
-                             for tc in message.tool_calls]
-            })
-            
-            for tool_call in message.tool_calls:
-                try:
-                    args = json.loads(tool_call.function.arguments)
-                    result = await session.call_tool(tool_call.function.name, args)
-                    content = result.content[0].text if result.content else "Done"
-                except Exception as e:
-                    content = f"Error: {e}"
-                    
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": content
-                })
-    
-    async def _list_prompts(self, session):
-        """List available prompts"""
-        try:
-            result = await session.list_prompts()
-            if result.prompts:
-                print("\nAvailable prompts:")
-                for prompt in result.prompts:
-                    args_info = f" (args: {', '.join(prompt.arguments)})" if hasattr(prompt, 'arguments') and prompt.arguments else ""
-                    print(f"- {prompt.name}: {prompt.description}{args_info}")
-            else:
-                print("No prompts available")
-        except Exception as e:
-            print(f"Error listing prompts: {e}")
-    
-    async def _get_prompt(self, session, name: str, arguments: dict = None):
-        """Get and display a specific prompt"""
-        try:
-            result = await session.get_prompt(name, arguments or {})
-            print(f"\nPrompt '{name}':")
-            for msg in result.messages:
-                role = msg.role.upper()
-                content = msg.content
-                print(f"\n{role}:\n{content}")
-        except Exception as e:
-            print(f"Error getting prompt '{name}': {e}")
-    
-    def _to_openai_tool(self, mcp_tool):
-        """Convert MCP tool to OpenAI format"""
-        return {
-            "type": "function",
-            "function": {
-                "name": mcp_tool.name,
-                "description": mcp_tool.description,
-                "parameters": mcp_tool.inputSchema
-            }
-        }
 
-async def main():
+            accumulated_msg = {"role": "assistant", "content": "", "tool_calls": []}
+
+            async for chunk in response:
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    print(delta.content, end="", flush=True)
+                    accumulated_msg["content"] += delta.content
+                if delta.tool_calls:
+                    accumulated_msg["tool_calls"].extend(delta.tool_calls)
+
+            print()  # newline after streaming
+            history.append(accumulated_msg)
+
+            # No tool calls → answer done
+            if not accumulated_msg["tool_calls"]:
+                break
+
+            # Execute each tool sequentially
+            for call in accumulated_msg["tool_calls"]:
+                try:
+                    args = json.loads(call.function.arguments or "{}")
+                    result = await session.call_tool(call.function.name, args)
+                    tool_content = (
+                        result.content[0].text
+                        if result.content
+                        else "✅ Tool executed, no textual output."
+                    )
+                except Exception:
+                    tool_content = "❌ " + traceback.format_exc(limit=2)
+
+                history.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": tool_content,
+                    }
+                )
+
+    # ---------- helpers ----------
+    async def _refresh_tools(self, session: ClientSession) -> None:
+        tools = await session.list_tools()
+        self._openai_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.inputSchema,
+                },
+            }
+            for t in tools.tools
+        ]
+
+
+# ---------- CLI wrapper ----------
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="General-purpose MCP NL client")
+    p.add_argument("--model", default=os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+    p.add_argument("--base-url", default=os.getenv("OPENAI_BASE_URL"))
+    p.add_argument("--server-cmd", default=os.getenv("MCP_SERVER_CMD", "python formatter_server.py"))
+    return p.parse_args()
+
+
+async def main() -> None:
+    args = parse_args()
     api_key = os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("OPENAI_BASE_URL")
-    
     if not api_key:
-        print("Set OPENAI_API_KEY environment variable")
-        return
-        
-    client = NLToSchemaClient(api_key, base_url)
-    server_cmd = os.getenv("MCP_SERVER_CMD", "python your_formatter_server.py").split()
-    await client.run(server_cmd)
+        sys.exit("❌  Set OPENAI_API_KEY env var.")
+    client = NLToMCPClient(api_key, args.base_url, args.model)
+    await client.run(args.server_cmd.split())
+
 
 if __name__ == "__main__":
     asyncio.run(main())
