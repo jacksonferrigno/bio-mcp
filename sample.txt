@@ -1,130 +1,53 @@
-import argparse, asyncio, json, os, sys, traceback
-from typing import List
 
-import openai
+# test_basic.py
+import pytest
+import asyncio
+import json
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 
+@pytest.mark.asyncio
+async def test_server_connects():
+    """Test we can connect to server"""
+    server_params = StdioServerParameters(
+        command="python",
+        args=["your_server.py"]
+    )
+    
+    async with ClientSession(server_params) as session:
+        # If we get here, connection works
+        assert True
 
-SYSTEM_MSG = {
-    "role": "system",
-    "content": (
-        "You are an MCP-aware assistant. "
-        "When useful, call an MCP tool by returning a JSON `tool_call`. "
-        "Only call tools that the server advertises. "
-        "Otherwise answer normally."
-    ),
-}
+@pytest.mark.asyncio 
+async def test_can_get_schemas():
+    """Test we can get schema list"""
+    server_params = StdioServerParameters(
+        command="python", 
+        args=["your_server.py"]
+    )
+    
+    async with ClientSession(server_params) as session:
+        content = await session.read_resource("schema://list")
+        schemas = json.loads(content.contents[0].text)
+        
+        # Just check it's not empty
+        assert len(schemas["schemas"]) > 0
 
-
-class NLToMCPClient:
-    def __init__(self, api_key: str, base_url: str | None, model: str):
-        self.llm = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
-        self.model = model
-        self._openai_tools: List[dict] = []
-
-    # ---------- public entry point ----------
-    async def run(self, server_cmd: List[str]) -> None:
-        params = StdioServerParameters(command=server_cmd[0], args=server_cmd[1:])
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                print("Connected to MCP server.  Type your query (or 'quit').\n")
-
-                history = [SYSTEM_MSG]
-                while True:
-                    user_input = input("> ").strip()
-                    if user_input.lower() in {"quit", "exit"}:
-                        return
-                    if not user_input:
-                        continue
-
-                    history.append({"role": "user", "content": user_input})
-                    await self._chat_loop(session, history)
-
-    # ---------- main conversation loop ----------
-    async def _chat_loop(self, session: ClientSession, history: list) -> None:
-        while True:
-            await self._refresh_tools(session)
-            response = await self.llm.chat.completions.create(
-                model=self.model,
-                messages=history,
-                tools=self._openai_tools,
-                tool_choice="auto",
-                stream=True,
-            )
-
-            accumulated_msg = {"role": "assistant", "content": "", "tool_calls": []}
-
-            async for chunk in response:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    print(delta.content, end="", flush=True)
-                    accumulated_msg["content"] += delta.content
-                if delta.tool_calls:
-                    accumulated_msg["tool_calls"].extend(delta.tool_calls)
-
-            print()  # newline after streaming
-            history.append(accumulated_msg)
-
-            # No tool calls → answer done
-            if not accumulated_msg["tool_calls"]:
-                break
-
-            # Execute each tool sequentially
-            for call in accumulated_msg["tool_calls"]:
-                try:
-                    args = json.loads(call.function.arguments or "{}")
-                    result = await session.call_tool(call.function.name, args)
-                    tool_content = (
-                        result.content[0].text
-                        if result.content
-                        else "✅ Tool executed, no textual output."
-                    )
-                except Exception:
-                    tool_content = "❌ " + traceback.format_exc(limit=2)
-
-                history.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": tool_content,
-                    }
-                )
-
-    # ---------- helpers ----------
-    async def _refresh_tools(self, session: ClientSession) -> None:
-        tools = await session.list_tools()
-        self._openai_tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.inputSchema,
-                },
-            }
-            for t in tools.tools
-        ]
-
-
-# ---------- CLI wrapper ----------
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="General-purpose MCP NL client")
-    p.add_argument("--model", default=os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
-    p.add_argument("--base-url", default=os.getenv("OPENAI_BASE_URL"))
-    p.add_argument("--server-cmd", default=os.getenv("MCP_SERVER_CMD", "python formatter_server.py"))
-    return p.parse_args()
-
-
-async def main() -> None:
-    args = parse_args()
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        sys.exit("❌  Set OPENAI_API_KEY env var.")
-    client = NLToMCPClient(api_key, args.base_url, args.model)
-    await client.run(args.server_cmd.split())
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+@pytest.mark.asyncio
+async def test_can_call_tool():
+    """Test we can call a schema tool"""
+    server_params = StdioServerParameters(
+        command="python",
+        args=["your_server.py"]  
+    )
+    
+    async with ClientSession(server_params) as session:
+        # Get first tool name
+        content = await session.read_resource("schema://list")
+        schemas = json.loads(content.contents[0].text)
+        first_tool = schemas["schemas"][0]["tool"]
+        
+        # Call it
+        result = await session.call_tool(first_tool, {})
+        
+        # Just check we got something back
+        assert result is not None
