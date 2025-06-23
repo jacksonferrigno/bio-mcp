@@ -1,53 +1,119 @@
-
-# test_basic.py
+# test_with_llm.py
 import pytest
 import asyncio
 import json
 from mcp import ClientSession, StdioServerParameters
+from openai import AsyncOpenAI  # or whatever LLM you're using
 
 @pytest.mark.asyncio
-async def test_server_connects():
-    """Test we can connect to server"""
+async def test_llm_can_use_schemas():
+    """Test LLM can read schemas and make tool calls"""
+    
+    # Setup MCP
     server_params = StdioServerParameters(
         command="python",
         args=["your_server.py"]
     )
     
-    async with ClientSession(server_params) as session:
-        # If we get here, connection works
-        assert True
-
-@pytest.mark.asyncio 
-async def test_can_get_schemas():
-    """Test we can get schema list"""
-    server_params = StdioServerParameters(
-        command="python", 
-        args=["your_server.py"]
-    )
+    # Setup LLM
+    llm_client = AsyncOpenAI()
     
     async with ClientSession(server_params) as session:
+        # Get schemas for LLM
         content = await session.read_resource("schema://list")
         schemas = json.loads(content.contents[0].text)
         
-        # Just check it's not empty
-        assert len(schemas["schemas"]) > 0
+        # Ask LLM a simple question
+        response = await llm_client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {
+                    "role": "system", 
+                    "content": f"Available schemas: {json.dumps(schemas, indent=2)}. When user asks for data, tell me which tool to call."
+                },
+                {
+                    "role": "user", 
+                    "content": "I need user information"
+                }
+            ]
+        )
+        
+        llm_response = response.choices[0].message.content
+        
+        # Check LLM mentioned a user-related tool
+        assert "user" in llm_response.lower()
+        print(f"LLM said: {llm_response}")
+
+@pytest.mark.asyncio  
+async def test_llm_tool_execution():
+    """Test LLM can actually execute tools"""
+    
+    server_params = StdioServerParameters(command="python", args=["your_server.py"])
+    llm_client = AsyncOpenAI()
+    
+    async with ClientSession(server_params) as session:
+        # Get schemas
+        content = await session.read_resource("schema://list") 
+        schemas = json.loads(content.contents[0].text)
+        
+        # Let LLM pick a tool and we'll execute it
+        response = await llm_client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"Schemas: {json.dumps(schemas)}. Reply with just the tool name to call for user data."
+                },
+                {
+                    "role": "user", 
+                    "content": "Get user schema details"
+                }
+            ]
+        )
+        
+        tool_name = response.choices[0].message.content.strip()
+        
+        # Execute the tool LLM suggested
+        result = await session.call_tool(tool_name, {})
+        schema_data = json.loads(result.content[0].text)
+        
+        # Verify it worked
+        assert "endpoint" in schema_data
+        print(f"✅ LLM picked {tool_name}, got: {schema_data['endpoint']['path']}")
 
 @pytest.mark.asyncio
-async def test_can_call_tool():
-    """Test we can call a schema tool"""
-    server_params = StdioServerParameters(
-        command="python",
-        args=["your_server.py"]  
-    )
+async def test_full_conversation():
+    """Test a realistic conversation"""
+    
+    server_params = StdioServerParameters(command="python", args=["your_server.py"])
+    llm_client = AsyncOpenAI()
     
     async with ClientSession(server_params) as session:
-        # Get first tool name
+        # Get schemas
         content = await session.read_resource("schema://list")
         schemas = json.loads(content.contents[0].text)
-        first_tool = schemas["schemas"][0]["tool"]
         
-        # Call it
-        result = await session.call_tool(first_tool, {})
+        # Have a conversation
+        messages = [
+            {
+                "role": "system",
+                "content": f"You help users find API info. Available schemas: {json.dumps(schemas)}"
+            },
+            {
+                "role": "user", 
+                "content": "How do I search for users with pagination?"
+            }
+        ]
         
-        # Just check we got something back
-        assert result is not None
+        response = await llm_client.chat.completions.create(
+            model="gpt-4",
+            messages=messages
+        )
+        
+        llm_answer = response.choices[0].message.content
+        
+        # Check LLM gave helpful info
+        assert "user" in llm_answer.lower()
+        assert any(word in llm_answer.lower() for word in ["page", "limit", "search"])
+        
+        print(f"LLM answered: {llm_answer}")
