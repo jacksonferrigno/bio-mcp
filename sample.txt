@@ -1,0 +1,43 @@
+```python
+import asyncio
+import aiohttp
+import json
+
+async def list_tools():
+    async with aiohttp.ClientSession() as session:
+        # Initialize connection
+        init_request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "clientInfo": {"name": "basic-client", "version": "1.0.0"}
+            }
+        }
+        
+        async with session.post("http://localhost:8000/mcp", json=init_request) as response:
+            init_result = await response.json()
+            print(f"Initialize: {init_result}")
+        
+        # List tools
+        tools_request = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }
+        
+        async with session.post("http://localhost:8000/mcp", json=tools_request) as response:
+            tools_result = await response.json()
+            tools = tools_result.get("result", {}).get("tools", [])
+            
+            print(f"\nAvailable tools ({len(tools)}):")
+            for tool in tools:
+                print(f"  - {tool['name']}: {tool.get('description', 'No description')}")
+
+if __name__ == "__main__":
+    asyncio.run(list_tools())
+```
+
+Now it uses your `/mcp` endpoint for both initialize and tools/list requests.​​​​​​​​​​​​​​​​
