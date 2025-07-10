@@ -1,1 +1,208 @@
+import asyncio
+import json
+import uuid
+from typing import Dict, List, Optional
+import aiohttp
 
+class SimpleMCPClient:
+    """Simple MCP Client using Streamable HTTP transport"""
+    
+    def __init__(self, server_url: str = "http://localhost:8123"):
+        self.server_url = server_url
+        self.session = None
+        self.session_id = None
+        self.initialized = False
+        
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession()
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+            
+    async def send_request(self, method: str, params: Optional[Dict] = None) -> Dict:
+        """Send JSON-RPC request to MCP server"""
+        
+        request = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": method
+        }
+        
+        if params:
+            request["params"] = params
+            
+        headers = {
+            'Accept': 'application/json, text/event-stream',
+            'Content-Type': 'application/json'
+        }
+        
+        if self.session_id:
+            headers['Mcp-Session-Id'] = self.session_id
+            
+        async with self.session.post(
+            self.server_url,
+            json=request,
+            headers=headers
+        ) as response:
+            
+            # Handle session ID from response headers
+            if 'Mcp-Session-Id' in response.headers:
+                self.session_id = response.headers['Mcp-Session-Id']
+            
+            if response.status >= 400:
+                text = await response.text()
+                raise Exception(f"HTTP {response.status}: {text}")
+            
+            content_type = response.headers.get('Content-Type', '')
+            
+            # Handle JSON response
+            if 'application/json' in content_type:
+                result = await response.json()
+                if 'error' in result:
+                    raise Exception(f"JSON-RPC error: {result['error']}")
+                return result
+            
+            # Handle SSE response
+            elif 'text/event-stream' in content_type:
+                return await self._parse_sse_response(response)
+            
+            return {}
+    
+    async def _parse_sse_response(self, response) -> Dict:
+        """Parse Server-Sent Events response"""
+        result = None
+        
+        async for line in response.content:
+            line = line.decode('utf-8').strip()
+            
+            if line.startswith('data: '):
+                data = line[6:]  # Remove 'data: ' prefix
+                
+                if data == '[DONE]':
+                    break
+                    
+                try:
+                    message = json.loads(data)
+                    # Look for JSON-RPC response (has 'id' and 'result')
+                    if 'id' in message and 'result' in message:
+                        result = message
+                        break
+                except json.JSONDecodeError:
+                    continue
+        
+        return result or {}
+    
+    async def send_notification(self, method: str, params: Optional[Dict] = None):
+        """Send JSON-RPC notification (no response expected)"""
+        
+        notification = {
+            "jsonrpc": "2.0",
+            "method": method
+        }
+        
+        if params:
+            notification["params"] = params
+            
+        headers = {
+            'Content-Type': 'application/json'
+        }
+        
+        if self.session_id:
+            headers['Mcp-Session-Id'] = self.session_id
+            
+        async with self.session.post(
+            self.server_url,
+            json=notification,
+            headers=headers
+        ) as response:
+            
+            # For notifications, server should return 202 Accepted
+            if response.status != 202:
+                text = await response.text()
+                raise Exception(f"Notification failed: HTTP {response.status}: {text}")
+            
+    async def initialize(self) -> Dict:
+        """Initialize MCP connection"""
+        if self.initialized:
+            return {}
+            
+        params = {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {
+                "roots": {"listChanged": True},
+                "sampling": {}
+            },
+            "clientInfo": {
+                "name": "Simple MCP Client",
+                "version": "1.0.0"
+            }
+        }
+        
+        # Send initialize request
+        response = await self.send_request("initialize", params)
+        
+        # Send initialized notification (required by MCP spec)
+        await self.send_notification("notifications/initialized")
+        
+        self.initialized = True
+        print("✓ MCP client initialized")
+        return response.get('result', {})
+        
+    async def list_tools(self) -> List[Dict]:
+        """List available tools from server"""
+        if not self.initialized:
+            await self.initialize()
+            
+        response = await self.send_request("tools/list")
+        tools = response.get('result', {}).get('tools', [])
+        print(f"✓ Found {len(tools)} tools")
+        return tools
+
+async def main():
+    """Corrected proof of concept"""
+    
+    print("Corrected Simple MCP Client")
+    print("=" * 30)
+    
+    try:
+        async with SimpleMCPClient() as client:
+            
+            # Initialize connection
+            print("Initializing connection...")
+            server_info = await client.initialize()
+            
+            if server_info:
+                server_name = server_info.get('serverInfo', {}).get('name', 'Unknown')
+                print(f"Connected to server: {server_name}")
+            
+            # List tools
+            print("\nListing tools...")
+            tools = await client.list_tools()
+            
+            if tools:
+                print(f"\nAvailable tools:")
+                for i, tool in enumerate(tools, 1):
+                    print(f"{i}. {tool['name']}")
+                    desc = tool.get('description', 'No description')
+                    print(f"   Description: {desc}")
+                    
+                    # Show input schema if available
+                    if 'inputSchema' in tool:
+                        schema = tool['inputSchema']
+                        if 'properties' in schema:
+                            props = list(schema['properties'].keys())
+                            print(f"   Parameters: {', '.join(props)}")
+                    print()
+            else:
+                print("No tools available")
+                
+    except Exception as e:
+        print(f"Error: {e}")
+        print("\nTroubleshooting:")
+        print("- Make sure MCP server is running at http://localhost:8123")
+        print("- Check that the server supports Streamable HTTP transport")
+
+if __name__ == "__main__":
+    asyncio.run(main())
