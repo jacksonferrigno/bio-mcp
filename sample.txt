@@ -1,109 +1,147 @@
 import asyncio
-import aiohttp
+import os
 import json
-from typing import Dict, Any, Optional, List
-from uuid import uuid4
+from openai import OpenAI
+from fastmcp import Client
 
-class MCPStreamableHTTPClient:
-    def __init__(self, url: str, headers: Optional[Dict[str, str]] = None):
-        self.url = url
-        self.headers = headers or {}
-        self.session = None
-        self.session_id = None
-        self.request_id = 0
-        
-    async def __aenter__(self):
-        self.session = aiohttp.ClientSession()
-        return self
-        
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.session:
-            await self.session.close()
-    
-    async def _send_request(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Send a JSON-RPC request via Streamable HTTP"""
-        self.request_id += 1
-        
-        request_data = {
-            "jsonrpc": "2.0",
-            "id": self.request_id,
-            "method": method,
-            "params": params or {}
-        }
-        
-        headers = {
-            "Content-Type": "application/json",
-            **self.headers
-        }
-        
-        # Add session ID if we have one
-        if self.session_id:
-            headers["mcp-session-id"] = self.session_id
-        
-        async with self.session.post(
-            self.url,
-            json=request_data,
-            headers=headers
-        ) as response:
-            if response.status != 200:
-                raise Exception(f"HTTP {response.status}: {await response.text()}")
-            
-            # Extract session ID from response headers for future requests
-            if not self.session_id and "mcp-session-id" in response.headers:
-                self.session_id = response.headers["mcp-session-id"]
-            
-            result = await response.json()
-            if "error" in result:
-                raise Exception(f"MCP Error: {result['error']}")
-            
-            return result.get("result", {})
-    
-    async def initialize(self):
-        """Initialize the MCP connection"""
-        return await self._send_request("initialize", {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {
-                "roots": {"listChanged": True},
-                "sampling": {}
-            },
-            "clientInfo": {
-                "name": "python-mcp-client",
-                "version": "1.0.0"
-            }
-        })
-    
-    async def ping(self):
-        """Ping the server"""
-        return await self._send_request("ping")
-    
-    async def list_tools(self):
-        """List available tools"""
-        return await self._send_request("tools/list")
-    
-    async def list_resources(self):
-        """List available resources"""
-        return await self._send_request("resources/list")
-    
-    async def list_prompts(self):
-        """List available prompts"""
-        return await self._send_request("prompts/list")
-    
-    async def call_tool(self, name: str, arguments: Dict[str, Any]):
-        """Call a tool"""
-        return await self._send_request("tools/call", {
-            "name": name,
-            "arguments": arguments
-        })
+# Configuration
+LITELLM_BASE_URL = "http://your-litellm-server:port/v1"
+LITELLM_API_KEY = "your-key"
+MCP_SERVER_URL = "http://your-mcp-server:port/mcp"
 
-# Usage
+# System prompt explaining the architecture
+SYSTEM_PROMPT = """"""
+
 async def main():
-    async with MCPStreamableHTTPClient("https://your-server-url/mcp") as client:
-        # Initialize first
-        await client.initialize()
-        
-        # Then use the client
+    print("Connecting to MCP server via FastMCP...\n")
+    
+    # Create FastMCP client - it auto-detects HTTP transport from the URL
+    client = Client(MCP_SERVER_URL)
+    
+    async with client:
+        # Verify connection
         await client.ping()
-        tools = await client.list_tools()
-        print(tools)
+        print("✓ Connected to MCP server\n")
+        
+        # Get available tools
+        tools_list = await client.list_tools()
+        
+        # Convert to OpenAI function calling format
+        openai_tools = []
+        for tool in tools_list:
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.inputSchema
+                }
+            })
+        
+        print(f"Found {len(openai_tools)} tools:")
+        for tool in tools_list:
+            print(f"  • {tool.name}: {tool.description}")
+        print("\n" + "="*60 + "\n")
+        
+        # Initialize LiteLLM (OpenAI-compatible)
+        llm = OpenAI(
+            base_url=LITELLM_BASE_URL,
+            api_key=LITELLM_API_KEY
+        )
+        
+        # Chat loop
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        
+        print("Chat started! Type 'quit' to exit.\n")
+        
+        while True:
+            # Get user input
+            user_input = input("You: ")
+            if user_input.lower() in ['quit', 'exit', 'q']:
+                break
+            
+            messages.append({"role": "user", "content": user_input})
+            
+            # Call LLM with available tools
+            response = llm.chat.completions.create(
+                model="llama-3.1-70b",  # Adjust to match your LiteLLM model
+                messages=messages,
+                tools=openai_tools if openai_tools else None,
+                tool_choice="auto" if openai_tools else None,
+                temperature=0.7
+            )
+            
+            assistant_message = response.choices[0].message
+            
+            # Handle tool calling loop
+            while assistant_message.tool_calls:
+                # Add assistant's message with tool calls
+                messages.append({
+                    "role": "assistant",
+                    "content": assistant_message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments
+                            }
+                        }
+                        for tc in assistant_message.tool_calls
+                    ]
+                })
+                
+                # Execute each tool call via FastMCP
+                for tool_call in assistant_message.tool_calls:
+                    tool_name = tool_call.function.name
+                    tool_args = json.loads(tool_call.function.arguments)
+                    
+                    print(f"\n🔧 Tool Call: {tool_name}")
+                    print(f"   Arguments: {tool_args}")
+                    
+                    # Call tool via FastMCP client
+                    result = await client.call_tool(tool_name, tool_args)
+                    
+                    # Extract the actual content from the result
+                    # FastMCP returns structured objects, need to unwrap
+                    if hasattr(result, 'content'):
+                        if isinstance(result.content, list) and len(result.content) > 0:
+                            tool_result = result.content[0].text if hasattr(result.content[0], 'text') else str(result.content[0])
+                        else:
+                            tool_result = str(result.content)
+                    else:
+                        tool_result = str(result)
+                    
+                    print(f"   Result: {tool_result}\n")
+                    
+                    # Add tool result to conversation
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": tool_result
+                    })
+                
+                # Get LLM's response after processing tool results
+                response = llm.chat.completions.create(
+                    model="llama-3.1-70b",
+                    messages=messages,
+                    tools=openai_tools,
+                    tool_choice="auto",
+                    temperature=0.7
+                )
+                
+                assistant_message = response.choices[0].message
+            
+            # Add final assistant response
+            messages.append({
+                "role": "assistant",
+                "content": assistant_message.content
+            })
+            
+            print(f"\nAssistant: {assistant_message.content}\n")
+    
+    print("\n✓ Disconnected from MCP server. Goodbye!")
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
